@@ -1,0 +1,82 @@
+# Weekly rebuild of upstream BentoPDF + this repo's PWA overlay, deployed
+# to GitHub Pages. Each run clones upstream fresh, so the weekly schedule
+# automatically picks up upstream releases and fixes.
+name: Deploy BentoPDF (PWA overlay) to GitHub Pages
+
+on:
+  schedule:
+    # Mondays at 06:07 UTC
+    - cron: '7 6 * * 1'
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; never cancel an in-flight Pages deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Override with a repository variable `UPSTREAM_REPO` if needed.
+  UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO || 'alam00000/bentopdf' }}
+  HUSKY: '0'
+  # vite.config.ts derives `base` from BASE_URL (`/bentopdf` -> `/bentopdf/`).
+  BASE_URL: /${{ github.event.repository.name }}
+  # Non-official SITE_URL => build scripts mark the site noindex and write
+  # sitemap URLs against this deployment instead of www.bentopdf.com.
+  SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout overlay repo
+        uses: actions/checkout@v4
+
+      - name: Clone upstream BentoPDF
+        run: git clone --depth 1 "https://github.com/${UPSTREAM_REPO}.git" upstream
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: upstream/package-lock.json
+
+      - name: Install dependencies
+        working-directory: upstream
+        run: npm ci
+
+      - name: Apply PWA overlay patches
+        run: node patches/apply.mjs upstream
+
+      # Full pipeline: blog -> tsc -> vite build -> SEO -> i18n pages
+      # (~3200 pages, the slow step; runs with --max-old-space-size=3072)
+      # -> sitemap -> headers -> indexing policy -> compress -> audit.
+      - name: Build
+        working-directory: upstream
+        run: npm run build
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: upstream/dist
+          name: github-pages-deployment
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-deployment
